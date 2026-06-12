@@ -1,2 +1,2 @@
 # DynamicAllocation-engine
-(a regime-aware multi-asset credit allocation framework)
+(RStudio: a regime-aware multi-asset credit allocation framework)
