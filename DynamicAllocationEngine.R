@@ -14,6 +14,7 @@ library(cluster)
 library(factoextra)
 library(broom)
 library(ggplot2)
+library(ggcorrplot)
 library(scales)
 
 library(MASS)
@@ -29,6 +30,7 @@ library(conflicted)
 conflict_prefer("select", "dplyr")
 conflict_prefer("filter", "dplyr")
 conflict_prefer("lag", "dplyr")
+conflict_prefer("map", "purrr")
 
 # Load Data ---------------------------------------------------------------
 setwd("/Users/chrisbyrialsen/Desktop/SDU/ds.econ/thesis ideas")
@@ -70,6 +72,54 @@ macro_global <- macro_regime_pca %>%
     PC2 = mean(PC2),
     .groups = "drop"
   )
+
+# K-Selection: Elbow + Silhouette 
+pca_data <- macro_global[, c("PC1", "PC2")]
+
+# Elbow plot (WSS)
+fviz_nbclust(
+  pca_data,
+  kmeans,
+  method  = "wss",
+  k.max   = 8,
+  linecolor = "#2c3e50"
+) +
+  labs(
+    title    = "Elbow Method: Optimal Number of Regimes",
+    subtitle = "Look for the 'elbow' where WSS reduction flattens",
+    x        = "Number of Clusters (k)",
+    y        = "Total Within-Cluster Sum of Squares"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+ggsave("elbow_plot.pdf", width = 7, height = 5, device = "pdf")
+
+# Silhouette plot
+fviz_nbclust(
+  pca_data,
+  kmeans,
+  method    = "silhouette",
+  k.max     = 8,
+  linecolor = "#e74c3c"
+) +
+  labs(
+    title    = "Silhouette Method: Optimal Number of Regimes",
+    subtitle = "Higher average silhouette = better-defined clusters",
+    x        = "Number of Clusters (k)",
+    y        = "Average Silhouette Width"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+ggsave("silhouette_plot.pdf", width = 7, height = 5, device = "pdf")
+
+# BIC via GMM (formal model selection)
+library(mclust)
+
+gmm_bic <- mclustBIC(pca_data, G = 1:8)
+plot(gmm_bic)
+summary(gmm_bic)
 
 set.seed(123)
 
@@ -256,7 +306,7 @@ names(spread_models) <- spread_cols
 map(spread_models, tidy)
 map(spread_models, glance)
 
-# Phase 2 & 3: Returns & MPT -------
+# Phase 2 & 3: Returns/MPT -------
 
 # 1. Define the MVO function (Requires library(quadprog) active!)
 mvo <- function(mu, sigma, gamma = 3) {
@@ -397,6 +447,146 @@ backtest %>%
   separate(name, into = c("strategy", "metric"), sep = "_(?=[^_]+$)") %>%
   pivot_wider(names_from = metric, values_from = value)
 
+# Phase 4.1: CVaR and Max Drawdown =============================
+
+cvar_95 <- function(x, alpha = 0.05) {
+  threshold <- quantile(x, alpha, na.rm = TRUE)
+  mean(x[x <= threshold], na.rm = TRUE)
+}
+
+max_drawdown <- function(x) {
+  cum <- cumprod(1 + x)
+  running_max <- cummax(cum)
+  drawdown <- (cum - running_max) / running_max
+  min(drawdown)
+}
+
+# Extended performance summary
+backtest %>%
+  summarise(
+    across(
+      c(ret_dynamic, ret_ew, ret_static),
+      list(
+        mean    = \(x) mean(x, na.rm = TRUE),
+        sd      = \(x) sd(x, na.rm = TRUE),
+        sharpe  = \(x) mean(x, na.rm = TRUE) / sd(x, na.rm = TRUE),
+        cvar95  = \(x) cvar_95(x),
+        max_dd  = \(x) max_drawdown(x)
+      )
+    )
+  ) %>%
+  pivot_longer(everything()) %>%
+  separate(name, into = c("strategy", "metric"), sep = "_(?=[^_]+$)") %>%
+  pivot_wider(names_from = metric, values_from = value)
+
+
+# Phase 4.2: Portfolio Diagnostics =================================================
+
+ret_cols    <- c("IEF_ret","LQD_ret","HYG_ret","AIGI_ret","AHYG_ret","BRJP_ret")
+asset_names <- c("IEF","LQD","HYG","AIGI","AHYG","BRJP")
+regime_list <- unique(portfolio_returns$regime_name)
+
+# --- 1. Regime-conditional correlation matrices ---------------------------
+
+cor_by_regime <- map_dfr(regime_list, function(reg) {
+  df <- portfolio_returns %>% filter(regime_name == reg)
+  cor_mat <- cor(df[, ret_cols], use = "complete.obs")
+  
+  as.data.frame(cor_mat) %>%
+    rownames_to_column("asset1") %>%
+    pivot_longer(-asset1, names_to = "asset2", values_to = "correlation") %>%
+    mutate(
+      asset1 = recode(asset1, !!!setNames(asset_names, ret_cols)),
+      asset2 = recode(asset2, !!!setNames(asset_names, ret_cols)),
+      regime_name = reg
+    )
+})
+
+p_corr <- ggplot(cor_by_regime, aes(x = asset1, y = asset2, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", correlation)), size = 3) +
+  scale_fill_gradient2(
+    low = "#2980b9", mid = "white", high = "#e74c3c",
+    midpoint = 0, limits = c(-1, 1), name = "Correlation"
+  ) +
+  facet_wrap(~regime_name, ncol = 1) +
+  labs(
+    title    = "Regime-Conditional Correlation Matrices",
+    subtitle = "Pairwise return correlations by macroeconomic regime",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title  = element_text(face = "bold"),
+    strip.text  = element_text(face = "bold")
+  )
+
+p_corr
+
+ggsave("correlation_matrices.pdf", plot = p_corr, width = 7, height = 14, device = "pdf")
+
+
+# --- 2. Risk Contribution table --------------------------------------------
+
+risk_contribution <- function(w, sigma) {
+  w <- as.numeric(w)
+  port_var <- as.numeric(t(w) %*% sigma %*% w)
+  marginal <- as.numeric(sigma %*% w)
+  rc <- w * marginal
+  rc / port_var   # normalized to sum to 1
+}
+
+avg_weights <- weights %>%
+  group_by(regime_name) %>%
+  summarise(
+    across(starts_with("w_"), mean),
+    .groups = "drop"
+  )
+
+risk_contrib_table <- map_dfr(regime_list, function(reg) {
+  w_row <- avg_weights %>% filter(regime_name == reg)
+  w_vec <- w_row %>% select(starts_with("w_")) %>% as.numeric()
+  
+  regime_id <- portfolio_returns %>%
+    filter(regime_name == reg) %>%
+    pull(regime) %>%
+    first()
+  
+  sigma <- regime_cov %>%
+    filter(regime == regime_id) %>%
+    pull(cov_matrix) %>%
+    .[[1]]
+  
+  rc <- risk_contribution(w_vec, sigma)
+  
+  tibble(
+    regime_name = reg,
+    asset       = asset_names,
+    weight      = w_vec,
+    risk_contribution = rc
+  )
+})
+
+risk_contrib_table
+
+
+# --- 3. Risk Premium vs Risk Contribution table -----------------------------
+
+avg_premiums <- expected_returns %>%
+  group_by(regime_name) %>%
+  summarise(
+    across(starts_with("exp_"), mean),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(-regime_name, names_to = "asset", values_to = "risk_premium") %>%
+  mutate(asset = gsub("exp_", "", asset))
+
+premium_vs_risk <- risk_contrib_table %>%
+  left_join(avg_premiums, by = c("regime_name", "asset")) %>%
+  mutate(premium_per_risk = risk_premium / risk_contribution)
+
+premium_vs_risk
 # Phase 5: Jensen's Alpha -------------------------------------------------
 
 # Use IEF as the market factor (bond market benchmark)
@@ -1132,6 +1322,71 @@ ggplot() +
        subtitle = "Red area represents cumulative transaction cost impact (20bps per trade)",
        y = "Cumulative Wealth (Base = 1)", x = NULL)
 
+# Risk Contribution Bar Chart ----------------------------------------------
+p_riskcontrib <- risk_contrib_table %>%
+  mutate(asset = factor(asset, levels = asset_names)) %>%
+  ggplot(aes(x = regime_name, y = risk_contribution, fill = asset)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.55) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title    = "Risk Contribution by Asset and Regime",
+    subtitle = "Share of total portfolio volatility attributable to each asset",
+    x        = "Macroeconomic Regime",
+    y        = "Risk Contribution (%)",
+    fill     = "Asset"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position  = "bottom",
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(face = "bold")
+  )
+
+p_riskcontrib
+
+ggsave(
+  "risk_contribution.pdf",
+  plot   = p_riskcontrib,
+  width  = 8,
+  height = 6,
+  device = "pdf"
+)
+# Risk Premium v. Risk Cont. Scatter ---------------------------------
+p_premium_risk <- premium_vs_risk %>%
+  mutate(asset = factor(asset, levels = asset_names)) %>%
+  ggplot(aes(x = risk_contribution, y = risk_premium, color = asset)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = asset), vjust = -1, size = 3.5, show.legend = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "grey50") +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "grey50") +
+  facet_wrap(~regime_name, ncol = 1, scales = "free") +
+  scale_color_brewer(palette = "Set2") +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    title    = "Risk Premium vs. Risk Contribution by Regime",
+    subtitle = "Assets above/left are efficient: high premium relative to risk contributed",
+    x        = "Risk Contribution (% of portfolio volatility)",
+    y        = "Risk Premium (expected excess return)",
+    color    = "Asset"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position  = "none",
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(face = "bold"),
+    strip.text       = element_text(face = "bold")
+  )
+
+p_premium_risk
+
+ggsave(
+  "premium_vs_risk_contribution.pdf",
+  plot   = p_premium_risk,
+  width  = 8,
+  height = 14,
+  device = "pdf"
+)
 # end ---------------------------------------------------------------------
 
 
