@@ -235,16 +235,6 @@ map(anova_results, summary)
 map(anova_results, TukeyHSD)
 
 
-
-
-
-
-
-
-
-
-
-
 # Phase 1: Credit Spreads -------------------------------------------------
 
 # Compute implied spreads (excess return over IEF)
@@ -636,14 +626,6 @@ cat("P(dynamic > static): ",  mean(boot_sharpe$sharpe_dynamic > boot_sharpe$shar
 cat("P(dynamic > ew):     ",  mean(boot_sharpe$sharpe_dynamic > boot_sharpe$sharpe_ew), "\n")
 
 
-
-
-
-
-
-
-
-
 # Forecast ---------------------------------------------------------------------
 
 ret_cols <- c(
@@ -828,10 +810,6 @@ ggsave(
   device = "pdf"
 )
 
-
-
-
-
 # Credit Spread Visualzation ----------------------------------------------
 
 spread_long <- portfolio_returns %>%
@@ -1004,17 +982,6 @@ ggsave(
   height = 14,
   device = "pdf"
 )
-
-
-
-
-
-
-
-
-
-
-
 
 # SML / Jensen's Alpha visual -----------------------------------
 
@@ -1220,9 +1187,6 @@ ggsave(
   device = "pdf"
 )
 
-
-
-
 # prelim: for forecast Vis... ----------------------------------------------
 
 # 1. Rebuild weights (got overwritten earlier)
@@ -1282,8 +1246,6 @@ as_tibble(implementation_table) %>%
     fill = "Asset Class"
   ) +
   scale_y_continuous(labels = scales::percent)
-
-
 
 # Friction Gap (cost basis) -----------------------------------------------
 
