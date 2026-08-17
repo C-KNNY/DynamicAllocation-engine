@@ -33,7 +33,7 @@ conflict_prefer("lag", "dplyr")
 conflict_prefer("map", "purrr")
 
 # Load Data ---------------------------------------------------------------
-setwd("/Users/chrisbyrialsen/Desktop/SDU/ds.econ/thesis ideas")
+setwd("/Users/ChrisKennabrew/Desktop/SDU/ds.econ/thesis ideas")
 
 portfolio_dataset <- read.csv("data/Portfolio_Dataset.csv")
 macro_regime_clean <- read.csv("data/Macro_Regime_Dataset.csv")
